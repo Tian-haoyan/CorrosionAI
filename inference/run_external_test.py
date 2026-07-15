@@ -11,7 +11,8 @@ This script predicts corrosion-feature classes for image folders arranged as:
         sample_2/
             ...
 
-File-name prefixes are used as optional true labels:
+For normal user-facing inference, file names are not treated as ground truth.
+If --evaluate-ground-truth is used, file-name prefixes are read as labels:
     C = Corroded
     E = Etched
     S = Skeletal
@@ -148,6 +149,14 @@ def parse_args() -> argparse.Namespace:
         "--no-random-equalize",
         action="store_true",
         help="Disable histogram equalization during preprocessing.",
+    )
+    parser.add_argument(
+        "--evaluate-ground-truth",
+        action="store_true",
+        help=(
+            "Evaluate predictions against labels parsed from file-name prefixes. "
+            "Use this for validation datasets only, not for normal user inference."
+        ),
     )
     return parser.parse_args()
 
@@ -312,21 +321,22 @@ def save_count_txt(count_dict: Dict[str, int], total_num: int, save_path: Path, 
 
 def save_ci_star_txt(
     pred_count: Dict[str, int],
-    true_count: Dict[str, int],
     save_path: Path,
     title: str,
+    true_count: Optional[Dict[str, int]] = None,
 ) -> None:
     predicted_ci = calculate_ci_star(pred_count)
-    true_ci = calculate_ci_star(true_count)
-    absolute_difference = abs(predicted_ci - true_ci)
 
     with save_path.open("w", encoding="utf-8") as f:
         f.write(f"{title}\n")
         f.write("=" * 60 + "\n")
         f.write("Formula: CI* = (Skeletal + 0.75 * Etched + 0.5 * Corroded) / N * 100\n\n")
         f.write(f"Predicted CI*: {predicted_ci:.6f}\n")
-        f.write(f"True CI*: {true_ci:.6f}\n")
-        f.write(f"Absolute difference: {absolute_difference:.6f}\n")
+        if true_count is not None:
+            true_ci = calculate_ci_star(true_count)
+            absolute_difference = abs(predicted_ci - true_ci)
+            f.write(f"True CI*: {true_ci:.6f}\n")
+            f.write(f"Absolute difference: {absolute_difference:.6f}\n")
 
 
 def save_confusion_matrix_txt(cm: np.ndarray, save_path: Path, title: str) -> None:
@@ -469,11 +479,14 @@ def collect_image_paths(sample_dir: Path) -> List[Path]:
     return sorted(image_paths, key=lambda p: str(p))
 
 
-def write_predictions_csv(rows: Iterable[Dict[str, object]], save_path: Path) -> None:
+def write_predictions_csv(
+    rows: Iterable[Dict[str, object]],
+    save_path: Path,
+    include_ground_truth: bool = False,
+) -> None:
     fieldnames = [
         "sample",
         "filename",
-        "true_label",
         "predicted_label",
         "confidence",
         "predicted_CI_class_weight",
@@ -483,6 +496,8 @@ def write_predictions_csv(rows: Iterable[Dict[str, object]], save_path: Path) ->
         "prob_A",
         "prob_R",
     ]
+    if include_ground_truth:
+        fieldnames.insert(2, "true_label")
     with save_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -496,13 +511,11 @@ def save_sample_summary(
     pred_count: Dict[str, int],
     true_count: Dict[str, int],
     cm: np.ndarray,
+    evaluate_ground_truth: bool = False,
 ) -> None:
     ensure_dir(sample_dir)
-    norm_cm = normalize_confusion_matrix(cm)
-    accuracy, per_class_metrics = calculate_metrics_from_cm(cm)
 
     total_images = int(sum(pred_count.values()))
-    total_labeled = int(sum(true_count.values()))
 
     save_count_txt(
         pred_count,
@@ -510,17 +523,25 @@ def save_sample_summary(
         sample_dir / "prediction_count.txt",
         f"Prediction Count Summary - {sample_name}",
     )
+    save_ci_star_txt(
+        pred_count,
+        sample_dir / "ci_star_summary.txt",
+        f"CI* Summary - {sample_name}",
+        true_count=true_count if evaluate_ground_truth else None,
+    )
+
+    if not evaluate_ground_truth:
+        return
+
+    norm_cm = normalize_confusion_matrix(cm)
+    accuracy, per_class_metrics = calculate_metrics_from_cm(cm)
+    total_labeled = int(sum(true_count.values()))
+
     save_count_txt(
         true_count,
         total_labeled,
         sample_dir / "true_count.txt",
         f"True Count Summary - {sample_name}",
-    )
-    save_ci_star_txt(
-        pred_count,
-        true_count,
-        sample_dir / "ci_star_summary.txt",
-        f"CI* Summary - {sample_name}",
     )
     save_metrics_txt(
         accuracy,
@@ -601,9 +622,9 @@ def save_group_confusion_matrices(sample_cm_dict: Dict[str, np.ndarray], output_
         )
         save_ci_star_txt(
             group_pred_count,
-            group_true_count,
             group_dir / "group_ci_star_summary.txt",
             f"Group CI* Summary - {title}",
+            true_count=group_true_count,
         )
         plot_confusion_matrix(
             group_cm,
@@ -693,7 +714,11 @@ def main() -> None:
 
         for i, image_path in enumerate(image_paths, start=1):
             filename = image_path.name
-            true_name = parse_true_label_from_filename(filename)
+            true_name = (
+                parse_true_label_from_filename(filename)
+                if args.evaluate_ground_truth
+                else None
+            )
             image, probs, pred_name, pred_conf = predict_one_image(
                 model, image_path, transform, device
             )
@@ -701,17 +726,17 @@ def main() -> None:
             sample_pred_count[pred_name] += 1
             overall_pred_count[pred_name] += 1
 
-            if true_name is not None:
+            if args.evaluate_ground_truth and true_name is not None:
                 sample_true_count[true_name] += 1
                 overall_true_count[true_name] += 1
 
-            update_confusion_matrix(sample_cm, true_name, pred_name)
-            update_confusion_matrix(overall_cm, true_name, pred_name)
+            if args.evaluate_ground_truth:
+                update_confusion_matrix(sample_cm, true_name, pred_name)
+                update_confusion_matrix(overall_cm, true_name, pred_name)
 
             row = {
                 "sample": sample_name,
                 "filename": filename,
-                "true_label": true_name if true_name is not None else "",
                 "predicted_label": pred_name,
                 "confidence": f"{pred_conf:.6f}",
                 "predicted_CI_class_weight": f"{ci_class_weight(pred_name):.2f}",
@@ -721,6 +746,8 @@ def main() -> None:
                 "prob_A": f"{probs[CLASS_TO_IDX['Unweathered-A']]:.6f}",
                 "prob_R": f"{probs[CLASS_TO_IDX['Unweathered-R']]:.6f}",
             }
+            if args.evaluate_ground_truth:
+                row["true_label"] = true_name if true_name is not None else ""
             all_rows.append(row)
 
             if args.save_per_image_figures:
@@ -728,7 +755,7 @@ def main() -> None:
                     image=image,
                     probs=probs,
                     pred_name=pred_name,
-                    true_name=true_name,
+                    true_name=true_name if args.evaluate_ground_truth else None,
                     filename=filename,
                     save_path=figure_dir / f"{image_path.stem}_probability.png",
                 )
@@ -736,24 +763,32 @@ def main() -> None:
             if i % 25 == 0 or i == len(image_paths):
                 print(f"[{sample_name}] {i}/{len(image_paths)} images processed")
 
-        sample_cm_dict[sample_name] = sample_cm.copy()
+        if args.evaluate_ground_truth:
+            sample_cm_dict[sample_name] = sample_cm.copy()
         save_sample_summary(
             sample_name,
             output_dir / "sample_summary" / sample_name,
             sample_pred_count,
             sample_true_count,
             sample_cm,
+            evaluate_ground_truth=args.evaluate_ground_truth,
         )
 
-    write_predictions_csv(all_rows, output_dir / "predictions.csv")
+    write_predictions_csv(
+        all_rows,
+        output_dir / "predictions.csv",
+        include_ground_truth=args.evaluate_ground_truth,
+    )
     save_sample_summary(
         "overall",
         output_dir / "overall_summary",
         overall_pred_count,
         overall_true_count,
         overall_cm,
+        evaluate_ground_truth=args.evaluate_ground_truth,
     )
-    save_group_confusion_matrices(sample_cm_dict, output_dir)
+    if args.evaluate_ground_truth:
+        save_group_confusion_matrices(sample_cm_dict, output_dir)
 
     print("\nDone.")
     print(f"Saved predictions to: {output_dir / 'predictions.csv'}")
