@@ -7,10 +7,7 @@ This repository provides the inference workflow, prediction scripts, Colab noteb
 
 ## Using the tool
 
-Using the tool is very simple. Users only need to prepare their grain images,  
-click this button to open the inference software in Google Colab:[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Tian-haoyan/CorrosionAI/blob/main/colab/grain_classifier_demo.ipynb), 
-and follow the step-by-step instructions inside. 
-No additional programming or local software installation is required.
+Using the tool is very simple. Users only need to prepare their grain images,  click this button to open the inference software in Google Colab:[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Tian-haoyan/CorrosionAI/blob/main/colab/grain_classifier_demo.ipynb), and follow the step-by-step instructions inside. No additional programming or local software installation is required.
 
 
 The Colab notebook allows users to upload their own images and run the trained model directly in the browser. The output is a single CSV file that reports the predicted corrosion class and class probabilities for each grain image, with a final summary row giving the predicted corrosion composition and the overall refined Corrosion Index (CI*) for the sample.
